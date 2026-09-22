@@ -1,0 +1,9 @@
+.env
+config.py
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+ledger.json
+logs/

@@ -9,12 +9,16 @@ because yfinance returned an empty frame and the code went straight to
 close.iloc[-1]. A bad download looked identical to a bad bug. Everything here
 exists to make that class of failure loud, retried, and survivable.
 
-Primary source is Kraken's public OHLC endpoint:
-  - no authentication, so the bot needs no credential to compute a signal
-  - it is the venue the strategy would actually trade, so the signal and the
-    execution price come from the same book. yfinance is a scraper of a third
-    party's view of a different set of exchanges.
-yfinance stays as a fallback for the case where Kraken is unreachable.
+Sources, in order of trustworthiness:
+  1. Kraken  - the venue the strategy would actually trade, so signal and
+     execution price come from the same order book. No authentication needed,
+     which is why this project holds no credential with financial power.
+  2. Coinbase - another real exchange API, also unauthenticated.
+
+yfinance was removed on 22 Sept 2026. It is a scraper of a third party's view
+of a different set of exchanges, and Yahoo changed its response format such
+that every request failed with JSONDecodeError. A fallback that does not work
+is worse than no fallback: it hides the real failure behind a second one.
 """
 
 import time
@@ -148,25 +152,6 @@ def _fetch_coinbase() -> pd.Series:
     return _drop_forming_candle(close)
 
 
-def _fetch_yfinance() -> pd.Series:
-    import yfinance as yf
-
-    frame = yf.download(
-        settings.YF_TICKER, period="400d", interval="1d", progress=False
-    )
-    if frame is None or frame.empty:
-        raise DataError("yfinance: empty frame")
-
-    if isinstance(frame.columns, pd.MultiIndex):
-        frame.columns = frame.columns.get_level_values(0)
-
-    close = frame["Close"].squeeze()
-    close.index = pd.to_datetime(close.index, utc=True)
-    close.name = "close"
-
-    return _drop_forming_candle(close)
-
-
 def _with_retries(fetch, source: str) -> pd.Series:
     last_error = None
     for attempt in range(1, RETRIES + 1):
@@ -180,14 +165,10 @@ def _with_retries(fetch, source: str) -> pd.Series:
     raise DataError("{}: all {} attempts failed ({})".format(source, RETRIES, last_error))
 
 
-# Ordered by trustworthiness. Kraken first because it is the venue the
-# strategy would actually trade. Coinbase second because it is a real exchange
-# API. yfinance last because it is a scraper of a third party's view and
-# breaks whenever Yahoo changes its response shape -- as it currently has.
+# Kraken first because it is the venue the strategy would actually trade.
 SOURCES = (
     ("kraken", _fetch_kraken),
     ("coinbase", _fetch_coinbase),
-    ("yfinance", _fetch_yfinance),
 )
 
 

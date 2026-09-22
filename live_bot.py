@@ -11,6 +11,7 @@ from datetime import datetime
 
 import broker as broker_module
 import data
+import health
 import settings
 import strategy
 from notify import send_notification
@@ -51,6 +52,7 @@ def _format_report(decision, position, equity, return_pct, executed):
 
 def main():
     settings.validate()
+    health.start()
 
     print("\n" + "=" * 52)
     print("TRADING BOT - {} MODE - {}".format(
@@ -64,6 +66,7 @@ def main():
         send_notification(
             title="Trading bot: broker unavailable", message=str(exc)[:400], priority=1
         )
+        health.failure("broker unavailable: {}".format(exc))
         return 3
 
     try:
@@ -77,6 +80,7 @@ def main():
             message=str(exc)[:400],
             priority=1,
         )
+        health.failure("no usable price data: {}".format(exc))
         return 2
 
     # Update the high water mark before deciding, so a trailing stop sees
@@ -109,6 +113,7 @@ def main():
         send_notification(
             title="Trading bot: execution failed", message=str(exc)[:400], priority=1
         )
+        health.failure("execution failed: {}".format(exc))
         return 4
 
     position = broker.position()
@@ -132,7 +137,13 @@ def main():
 
     print("\nDone.")
     # A run whose report nobody received is not a successful run.
-    return 0 if sent else 1
+    if not sent:
+        health.failure("signal computed but the notification was not delivered")
+        return 1
+
+    health.success("{} {} @ ${:,.2f}  equity ${:,.2f}".format(
+        decision.action, decision.as_of, decision.price, equity))
+    return 0
 
 
 if __name__ == "__main__":

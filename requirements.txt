@@ -1,7 +1,9 @@
 # Pinned so a transitive update cannot silently change the bot's behaviour.
-# Regenerate with: pip freeze > requirements.txt
+# Regenerate with: .venv/bin/pip freeze > requirements.txt
+#
+# yfinance was removed on 22 Sept 2026: Yahoo changed its response format and
+# every request failed. Prices now come from Kraken and Coinbase directly.
 pandas==2.2.3
 numpy==2.0.2
 requests==2.32.3
 matplotlib==3.9.2
-yfinance==0.2.44

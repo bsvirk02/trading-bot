@@ -37,14 +37,20 @@ _load_env()
 PUSHOVER_USER_KEY = os.environ.get("PUSHOVER_USER_KEY", "")
 PUSHOVER_API_TOKEN = os.environ.get("PUSHOVER_API_TOKEN", "")
 
+# Optional dead-man's switch (healthchecks.io). Pushover tells you when a run
+# FAILED; nothing tells you when a run never happened at all, which is exactly
+# how 20-21 September passed unnoticed. An external service expecting a daily
+# ping is the only thing that can detect silence, because it does not depend on
+# this machine being awake.
+HEALTHCHECK_URL = os.environ.get("HEALTHCHECK_URL", "").strip()
+
 # --- Mode --------------------------------------------------------------
 # paper = simulated fills against real prices. live = real orders.
 MODE = os.environ.get("MODE", "paper").strip().lower()
 
 # --- Market ------------------------------------------------------------
 KRAKEN_PAIR = "XXBTZUSD"        # Kraken's name for BTC/USD
-COINBASE_PRODUCT = "BTC-USD"    # first fallback: another real exchange
-YF_TICKER = "BTC-USD"           # last resort: a scraper, not an exchange API
+COINBASE_PRODUCT = "BTC-USD"    # fallback: another real exchange
 
 # --- Strategy ----------------------------------------------------------
 # Shared by backtest.py and live_bot.py. Single source of truth.
@@ -66,7 +72,7 @@ TAKER_FEE_PCT = 0.0026        # Kraken taker fee, 0.26%
 SLIPPAGE_PCT = 0.0005         # assumed adverse fill, 0.05%
 
 # --- Candle semantics ---------------------------------------------------
-# Kraken's (and yfinance's) most recent daily row is the CURRENT, still-forming
+# The most recent daily row from any source is the CURRENT, still-forming
 # day. The backtest runs on completed daily closes, so feeding it a partial
 # candle makes the live signal flicker intraday against a strategy that was
 # never tested that way. True = signal on completed candles only.

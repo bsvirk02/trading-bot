@@ -1,9 +1,15 @@
-# Pinned so a transitive update cannot silently change the bot's behaviour.
-# Regenerate with: .venv/bin/pip freeze > requirements.txt
+# Lower bounds rather than exact pins, so the project installs on whatever
+# recent Python is available. CI pins the interpreter version instead.
+#
+# numpy must be >= 2.1: 2.0.x ships no wheel for Python 3.13 on arm64, so pip
+# falls back to compiling from source and fails on modern clang.
+#
+# matplotlib was removed: the only file that plotted anything was bot.py,
+# which strategy.py and backtest.py replaced. Nothing imports it now, and
+# dropping it removes a large dependency from every CI run.
 #
 # yfinance was removed on 22 Sept 2026: Yahoo changed its response format and
-# every request failed. Prices now come from Kraken and Coinbase directly.
-pandas==2.2.3
-numpy==2.0.2
-requests==2.32.3
-matplotlib==3.9.2
+# every request failed. Prices come from Kraken and Coinbase directly.
+numpy>=2.1
+pandas>=2.2.3
+requests>=2.32

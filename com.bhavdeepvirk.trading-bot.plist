@@ -8,27 +8,52 @@
     <key>ProgramArguments</key>
     <array>
         <string>/Users/bhavdeepvirk/Trading Bot Project/run_daily.sh</string>
+        <string>launchd</string>
     </array>
 
-    <!-- live_bot.py does `from config import ...`, so it must run with the
-         project directory as cwd or the import fails. -->
+    <!-- live_bot.py imports settings.py, which reads .env from the project
+         directory, so the job must run with that directory as cwd. -->
     <key>WorkingDirectory</key>
     <string>/Users/bhavdeepvirk/Trading Bot Project</string>
 
+    <!-- Three triggers, not one.
+
+         launchd DISCARDS a StartCalendarInterval window missed while the Mac
+         is off or asleep - it does not defer it. On 20-21 Sept the Mac was
+         powered off at 08:00 and both days' runs vanished silently.
+
+         RunAtLoad fires the job at login/boot, so a machine switched on at
+         11am still runs that morning. The 20:00 entry is a backstop for a day
+         the Mac is shut all morning and never rebooted.
+
+         run_daily.sh is idempotent - a per-day success marker means whichever
+         trigger fires first does the work and the others no-op - so three
+         triggers produce at most one run per day. -->
+    <key>RunAtLoad</key>
+    <true/>
+
     <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>8</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>8</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
 
     <key>StandardOutPath</key>
     <string>/Users/bhavdeepvirk/Trading Bot Project/logs/launchd.out.log</string>
     <key>StandardErrorPath</key>
     <string>/Users/bhavdeepvirk/Trading Bot Project/logs/launchd.err.log</string>
 
-    <key>RunAtLoad</key>
-    <false/>
+    <key>ProcessType</key>
+    <string>Background</string>
 </dict>
 </plist>

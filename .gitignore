@@ -6,4 +6,5 @@ __pycache__/
 .venv/
 venv/
 ledger.json
+ledger.json.tmp
 logs/

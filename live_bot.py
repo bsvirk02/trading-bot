@@ -1,62 +1,76 @@
 """
-Daily BTC signal run.
+The daily run: fetch prices, decide, execute, report.
 
-Phase 1 scope: secrets removed. This file previously imported Kraken API
-credentials and opened a krakenex connection it never used -- the bot has
-never placed an order. Real execution arrives with broker.py (Phase 4).
-
-Moving averages are read from settings.py so this file and backtest.py
-cannot drift apart.
+This file used to contain its own copy of the strategy and its own copy of the
+notification code. Both had drifted from the versions they were copied from.
+It now orchestrates and nothing more -- the rules live in strategy.py, the
+execution in broker.py, the prices in data.py, the notifications in notify.py.
 """
 
 from datetime import datetime
 
+import broker as broker_module
 import data
 import settings
+import strategy
 from notify import send_notification
 
 
-def get_current_signal():
-    # data.get_closes() handles source selection, retries and validation, and
-    # raises DataError rather than returning something the strategy would
-    # silently misread.
-    close = data.get_closes()
-
-    sma_short = close.rolling(window=settings.SMA_SHORT).mean()
-    sma_long = close.rolling(window=settings.SMA_LONG).mean()
-    sma_trend = close.rolling(window=settings.SMA_TREND).mean()
-
-    current_price = float(close.iloc[-1])
-    current_short = float(sma_short.iloc[-1])
-    current_long = float(sma_long.iloc[-1])
-    current_trend = float(sma_trend.iloc[-1])
-
-    ma_signal = current_short > current_long
-    bull_market = current_price > current_trend
-
-    return {
-        "signal": "BUY" if (ma_signal and bull_market) else "HOLD/SELL",
-        "price": current_price,
-        "sma_short": current_short,
-        "sma_long": current_long,
-        "sma_trend": current_trend,
-        "ma_crossover": ma_signal,
-        "bull_market": bull_market,
-        "as_of": close.index[-1].date(),
-    }
+def _format_report(decision, position, equity, return_pct, executed):
+    lines = [
+        "Candle:  {}".format(decision.as_of),
+        "Price:   ${:,.2f}".format(decision.price),
+        "",
+        "{}MA ${:,.0f} / {}MA ${:,.0f} / {}MA ${:,.0f}".format(
+            settings.SMA_SHORT, decision.sma_short,
+            settings.SMA_LONG, decision.sma_long,
+            settings.SMA_TREND, decision.sma_trend,
+        ),
+        "Crossover: {}   Bull: {}".format(
+            "yes" if decision.ma_crossover else "no",
+            "yes" if decision.bull_market else "no",
+        ),
+        "",
+        "Action:  {} ({})".format(decision.action, decision.reason),
+    ]
+    if executed:
+        lines.append("Filled:  ${:,.2f}  fee ${:.2f}".format(
+            executed["fill"], executed["fee"]))
+        if "pnl" in executed:
+            lines.append("Trade P&L: ${:,.2f}".format(executed["pnl"]))
+    lines += [
+        "",
+        "Position: {}".format(
+            "{:.6f} BTC @ ${:,.2f}".format(position.qty, position.entry_price)
+            if position else "flat"
+        ),
+        "Equity:   ${:,.2f} ({:+.2f}%)".format(equity, return_pct),
+    ]
+    return "\n".join(lines)
 
 
 def main():
     settings.validate()
 
-    print("\n" + "=" * 50)
-    print("TRADING BOT STATUS - {}".format(datetime.now().strftime("%Y-%m-%d %H:%M")))
-    print("=" * 50)
+    print("\n" + "=" * 52)
+    print("TRADING BOT - {} MODE - {}".format(
+        settings.MODE.upper(), datetime.now().strftime("%Y-%m-%d %H:%M")))
+    print("=" * 52)
 
     try:
-        signal = get_current_signal()
+        broker = broker_module.get_broker()
+    except broker_module.BrokerError as exc:
+        print("\nBROKER ERROR: {}".format(exc))
+        send_notification(
+            title="Trading bot: broker unavailable", message=str(exc)[:400], priority=1
+        )
+        return 3
+
+    try:
+        closes = data.get_closes()
     except data.DataError as exc:
-        # Loud and non-zero, so run_daily.sh alerts and a later trigger retries.
+        # Loud and non-zero, so run_daily.sh alerts and a later trigger retries
+        # rather than the day being silently lost.
         print("\nDATA ERROR: {}".format(exc))
         send_notification(
             title="Trading bot: no usable price data",
@@ -65,37 +79,56 @@ def main():
         )
         return 2
 
-    print("\nCandle date:    {}".format(signal["as_of"]))
-    print("BTC Price:      ${:,.2f}".format(signal["price"]))
-    print("{} Day MA:      ${:,.2f}".format(settings.SMA_SHORT, signal["sma_short"]))
-    print("{} Day MA:    ${:,.2f}".format(settings.SMA_LONG, signal["sma_long"]))
-    print("{} Day MA:    ${:,.2f}".format(settings.SMA_TREND, signal["sma_trend"]))
-    print("\nMA Crossover:   {}".format("YES" if signal["ma_crossover"] else "NO"))
-    print("Bull Market:    {}".format("YES" if signal["bull_market"] else "NO"))
-    print("\n>>> SIGNAL: {} <<<".format(signal["signal"]))
+    position = broker.position()
+    decision = strategy.decide_latest(closes, position)
 
-    emoji = "\U0001F7E2" if signal["signal"] == "BUY" else "\U0001F534"
+    print("\nCandle:    {}".format(decision.as_of))
+    print("Price:     ${:,.2f}".format(decision.price))
+    print("{:>3} Day MA: ${:,.2f}".format(settings.SMA_SHORT, decision.sma_short))
+    print("{:>3} Day MA: ${:,.2f}".format(settings.SMA_LONG, decision.sma_long))
+    print("{:>3} Day MA: ${:,.2f}".format(settings.SMA_TREND, decision.sma_trend))
+    print("Crossover: {}".format("YES" if decision.ma_crossover else "NO"))
+    print("Bull:      {}".format("YES" if decision.bull_market else "NO"))
+    print("\n>>> {} - {} <<<".format(decision.action, decision.reason))
+
+    executed = None
+    try:
+        if decision.action == "BUY":
+            executed = broker.buy(decision.price, decision.as_of, decision.reason)
+            print("BOUGHT {:.6f} BTC at ${:,.2f} (fee ${:.2f})".format(
+                executed["qty"], executed["fill"], executed["fee"]))
+        elif decision.action == "SELL":
+            executed = broker.sell(decision.price, decision.as_of, decision.reason)
+            print("SOLD {:.6f} BTC at ${:,.2f} (fee ${:.2f}, P&L ${:,.2f})".format(
+                executed["qty"], executed["fill"], executed["fee"], executed["pnl"]))
+    except broker_module.BrokerError as exc:
+        print("\nEXECUTION ERROR: {}".format(exc))
+        send_notification(
+            title="Trading bot: execution failed", message=str(exc)[:400], priority=1
+        )
+        return 4
+
+    position = broker.position()
+    equity = broker.equity(decision.price)
+    return_pct = broker.total_return_pct(decision.price)
+
+    print("\nPosition:  {}".format(
+        "{:.6f} BTC @ ${:,.2f}".format(position.qty, position.entry_price)
+        if position else "flat"))
+    print("Equity:    ${:,.2f} ({:+.2f}%)".format(equity, return_pct))
+
+    if decision.action in ("BUY", "SELL"):
+        emoji, title = ("\U0001F7E2", "BOUGHT") if decision.action == "BUY" else ("\U0001F534", "SOLD")
+    else:
+        emoji, title = "⚪", "HOLD"
+
     sent = send_notification(
-        title="{} BTC Signal: {}".format(emoji, signal["signal"]),
-        message=(
-            "Price: ${:,.0f}\n"
-            "{}MA: ${:,.0f}\n"
-            "{}MA: ${:,.0f}\n"
-            "{}MA: ${:,.0f}\n"
-            "Crossover: {}\n"
-            "Bull Market: {}".format(
-                signal["price"],
-                settings.SMA_SHORT, signal["sma_short"],
-                settings.SMA_LONG, signal["sma_long"],
-                settings.SMA_TREND, signal["sma_trend"],
-                "yes" if signal["ma_crossover"] else "no",
-                "yes" if signal["bull_market"] else "no",
-            )
-        ),
+        title="{} {} BTC ({})".format(emoji, title, settings.MODE),
+        message=_format_report(decision, position, equity, return_pct, executed),
     )
 
     print("\nDone.")
-    # A run that computed a signal nobody received is not a successful run.
+    # A run whose report nobody received is not a successful run.
     return 0 if sent else 1
 
 

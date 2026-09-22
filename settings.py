@@ -56,6 +56,13 @@ STOP_LOSS_PCT = 0.15          # exit if price falls 15% below entry
 TAKER_FEE_PCT = 0.0026        # Kraken taker fee, 0.26%
 SLIPPAGE_PCT = 0.0005         # assumed adverse fill, 0.05%
 
+# --- Candle semantics ---------------------------------------------------
+# Kraken's (and yfinance's) most recent daily row is the CURRENT, still-forming
+# day. The backtest runs on completed daily closes, so feeding it a partial
+# candle makes the live signal flicker intraday against a strategy that was
+# never tested that way. True = signal on completed candles only.
+USE_COMPLETED_CANDLES_ONLY = True
+
 # --- Data quality guards -----------------------------------------------
 MIN_CANDLES = SMA_TREND + 20  # enough history to compute every MA
 MAX_CANDLE_AGE_HOURS = 36     # newest bar older than this = stale data

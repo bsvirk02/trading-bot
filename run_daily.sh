@@ -47,11 +47,20 @@ if [ "$(cat "$STATE" 2>/dev/null)" = "$TODAY" ]; then
     exit 0
 fi
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') starting run (trigger: ${1:-unspecified})" >> "$LOG"
+# Prefer the project virtualenv so the bot's dependencies are pinned and
+# independent of whatever the system Python happens to have. Falls back to the
+# system interpreter if the venv has not been created yet.
+if [ -x "$DIR/.venv/bin/python3" ]; then
+    PYTHON="$DIR/.venv/bin/python3"
+else
+    PYTHON="/usr/bin/python3"
+fi
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') starting run (trigger: ${1:-unspecified}, python: $PYTHON)" >> "$LOG"
 
 # Not `exec`: the shell must survive the python process to inspect its exit
 # code and alert. That is the whole point of this wrapper.
-/usr/bin/python3 -u live_bot.py >> "$LOG" 2>&1
+"$PYTHON" -u live_bot.py >> "$LOG" 2>&1
 STATUS=$?
 
 if [ $STATUS -eq 0 ]; then
@@ -68,7 +77,7 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') run FAILED with exit $STATUS" >> "$LOG"
 # Read the bot's own Pushover credentials from settings.py (.env-backed)
 # rather than duplicating them here.
 TAIL=$(tail -c 400 "$LOG" 2>/dev/null | tr -d '\000')
-/usr/bin/python3 - "$STATUS" "$TAIL" <<'PY' || echo "alert failed too" >> "$LOG"
+"$PYTHON" - "$STATUS" "$TAIL" <<'PY' || echo "alert failed too" >> "$LOG"
 import os, sys, urllib.parse, urllib.request
 sys.path.insert(0, os.environ.get("BOT_DIR", os.getcwd()))
 try:

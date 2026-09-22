@@ -1,0 +1,19 @@
+{
+  "cash": 0.0,
+  "qty": 0.1151238944618884,
+  "entry_price": 86637.0969,
+  "starting_cash": 10000.0,
+  "opened_at": "2026-09-22T12:40:23.418541+00:00",
+  "trades": [
+    {
+      "action": "BUY",
+      "as_of": "2026-09-21",
+      "at": "2026-09-22T12:40:23.589675+00:00",
+      "quote_price": 86593.8,
+      "fill_price": 86637.1,
+      "qty": 0.11512389,
+      "fee": 26.0,
+      "reason": "entry conditions met"
+    }
+  ]
+}

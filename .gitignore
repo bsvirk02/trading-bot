@@ -5,7 +5,9 @@ __pycache__/
 .DS_Store
 .venv/
 venv/
-ledger.json
+# ledger.json is intentionally TRACKED: it is the paper account's only state,
+# and GitHub Actions needs it committed to carry the position between runs.
+# It contains no secrets - positions, fills and fees only.
 ledger.json.tmp
 logs/
 cache/

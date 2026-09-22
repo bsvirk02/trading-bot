@@ -1,0 +1,65 @@
+name: Daily BTC signal
+
+# Runs the bot in CI so it no longer depends on one laptop being awake.
+# launchd discards a schedule missed while the machine is off rather than
+# deferring it, which silently dropped two days of signals in September 2026.
+#
+# GitHub's scheduled runs can be delayed by 5-15 minutes. Irrelevant for a
+# strategy that trades roughly twice a year on daily closes.
+#
+# Schedule is UTC and does not follow British Summer Time, so this fires at
+# 08:00 BST in summer and 07:00 GMT in winter. Also irrelevant here: the
+# signal is computed from yesterday's completed close, which does not change
+# during the day.
+
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:          # lets you run it by hand from the Actions tab
+
+# Two runs writing the ledger at once would corrupt the paper account.
+concurrency:
+  group: trading-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: write             # needed to commit the updated ledger back
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -q -r requirements.txt
+
+      - name: Run the bot
+        env:
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          PUSHOVER_API_TOKEN: ${{ secrets.PUSHOVER_API_TOKEN }}
+          HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
+          MODE: paper
+        run: python live_bot.py
+
+      - name: Commit the ledger if it changed
+        # The paper account is the only state the bot keeps. Committing it
+        # makes the trading record an auditable git history rather than a file
+        # on one machine.
+        run: |
+          if git diff --quiet -- ledger.json; then
+            echo "No ledger change today."
+            exit 0
+          fi
+          git config user.name  "trading-bot"
+          git config user.email "trading-bot@users.noreply.github.com"
+          git add ledger.json
+          git commit -m "Paper trade: $(date -u +%Y-%m-%d)"
+          git push

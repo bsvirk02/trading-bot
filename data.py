@@ -28,6 +28,12 @@ import settings
 KRAKEN_OHLC_URL = "https://api.kraken.com/0/public/OHLC"
 DAILY_INTERVAL_MINUTES = 1440
 
+COINBASE_CANDLES_URL = "https://api.exchange.coinbase.com/products/{}/candles"
+DAILY_GRANULARITY_SECONDS = 86400
+
+# Coinbase rejects requests without one.
+HEADERS = {"User-Agent": "trading-bot/1.0"}
+
 RETRIES = 3
 BACKOFF_SECONDS = 2
 
@@ -59,12 +65,19 @@ def _validate(close: pd.Series, source: str) -> pd.Series:
     if (tail <= 0).any():
         raise DataError("{}: non-positive prices in recent candles".format(source))
 
-    newest = close.index[-1]
-    age = datetime.now(timezone.utc) - newest.to_pydatetime()
+    # Measure staleness from when the newest candle CLOSED, not when it opened.
+    newest_open = close.index[-1]
+    newest_close = newest_open.to_pydatetime() + timedelta(
+        hours=settings.CANDLE_DURATION_HOURS
+    )
+    age = datetime.now(timezone.utc) - newest_close
     if age > timedelta(hours=settings.MAX_CANDLE_AGE_HOURS):
         raise DataError(
-            "{}: newest candle is {} old ({}), stale beyond the {}h limit".format(
-                source, age, newest.date(), settings.MAX_CANDLE_AGE_HOURS
+            "{}: newest candle ({}) closed {:.1f}h ago, stale beyond the {}h limit".format(
+                source,
+                newest_open.date(),
+                age.total_seconds() / 3600.0,
+                settings.MAX_CANDLE_AGE_HOURS,
             )
         )
 
@@ -95,14 +108,44 @@ def _fetch_kraken() -> pd.Series:
     index = pd.to_datetime([int(r[0]) for r in rows], unit="s", utc=True)
     close = pd.Series([float(r[4]) for r in rows], index=index, name="close")
 
-    if settings.USE_COMPLETED_CANDLES_ONLY and len(close) > 1:
-        # Kraken's final row is the CURRENT, still-forming day. The backtest
-        # runs on completed daily closes, so including a partial candle makes
-        # the live signal flicker intraday against a strategy that was never
-        # tested that way.
-        close = close.iloc[:-1]
+    return _drop_forming_candle(close)
 
+
+def _drop_forming_candle(close: pd.Series) -> pd.Series:
+    """Remove the current, still-forming daily candle.
+
+    The backtest runs on completed daily closes. Including a partial candle
+    makes the live signal flicker intraday against a strategy that was never
+    tested that way.
+    """
+    if not settings.USE_COMPLETED_CANDLES_ONLY or len(close) <= 1:
+        return close
+    today = datetime.now(timezone.utc).date()
+    if close.index[-1].date() >= today:
+        close = close.iloc[:-1]
     return close
+
+
+def _fetch_coinbase() -> pd.Series:
+    """Coinbase Exchange public candles. No auth, max 300 daily candles."""
+    response = requests.get(
+        COINBASE_CANDLES_URL.format(settings.COINBASE_PRODUCT),
+        params={"granularity": DAILY_GRANULARITY_SECONDS},
+        headers=HEADERS,
+        timeout=20,
+    )
+    response.raise_for_status()
+    rows = response.json()
+
+    if not isinstance(rows, list) or not rows:
+        raise DataError("coinbase: unexpected payload {}".format(str(rows)[:200]))
+
+    # Coinbase returns [time, low, high, open, close, volume], newest first.
+    rows = sorted(rows, key=lambda r: r[0])
+    index = pd.to_datetime([int(r[0]) for r in rows], unit="s", utc=True)
+    close = pd.Series([float(r[4]) for r in rows], index=index, name="close")
+
+    return _drop_forming_candle(close)
 
 
 def _fetch_yfinance() -> pd.Series:
@@ -121,12 +164,7 @@ def _fetch_yfinance() -> pd.Series:
     close.index = pd.to_datetime(close.index, utc=True)
     close.name = "close"
 
-    if settings.USE_COMPLETED_CANDLES_ONLY and len(close) > 1:
-        today = datetime.now(timezone.utc).date()
-        if close.index[-1].date() >= today:
-            close = close.iloc[:-1]
-
-    return close
+    return _drop_forming_candle(close)
 
 
 def _with_retries(fetch, source: str) -> pd.Series:
@@ -142,25 +180,36 @@ def _with_retries(fetch, source: str) -> pd.Series:
     raise DataError("{}: all {} attempts failed ({})".format(source, RETRIES, last_error))
 
 
+# Ordered by trustworthiness. Kraken first because it is the venue the
+# strategy would actually trade. Coinbase second because it is a real exchange
+# API. yfinance last because it is a scraper of a third party's view and
+# breaks whenever Yahoo changes its response shape -- as it currently has.
+SOURCES = (
+    ("kraken", _fetch_kraken),
+    ("coinbase", _fetch_coinbase),
+    ("yfinance", _fetch_yfinance),
+)
+
+
 def get_closes() -> pd.Series:
     """Daily closing prices, newest last. Raises DataError if nothing works."""
-    try:
-        close = _with_retries(_fetch_kraken, "kraken")
-        print("Price source: kraken ({} candles, latest {})".format(
-            len(close), close.index[-1].date()))
-        return close
-    except DataError as kraken_error:
-        print("Kraken unavailable, falling back to yfinance: {}".format(kraken_error))
+    errors = []
+    for position, (name, fetch) in enumerate(SOURCES):
+        try:
+            close = _with_retries(fetch, name)
+        except DataError as exc:
+            errors.append(str(exc))
+            print("{} unavailable: {}".format(name, exc))
+            continue
 
-    try:
-        close = _with_retries(_fetch_yfinance, "yfinance")
-        print("Price source: yfinance FALLBACK ({} candles, latest {})".format(
-            len(close), close.index[-1].date()))
+        label = name if position == 0 else "{} FALLBACK".format(name)
+        print("Price source: {} ({} candles, latest close {})".format(
+            label, len(close), close.index[-1].date()))
         return close
-    except DataError as yf_error:
-        raise DataError(
-            "No usable price data from any source. Last error: {}".format(yf_error)
-        )
+
+    raise DataError(
+        "No usable price data from any source.\n  " + "\n  ".join(errors)
+    )
 
 
 if __name__ == "__main__":

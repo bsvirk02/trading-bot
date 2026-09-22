@@ -42,8 +42,9 @@ PUSHOVER_API_TOKEN = os.environ.get("PUSHOVER_API_TOKEN", "")
 MODE = os.environ.get("MODE", "paper").strip().lower()
 
 # --- Market ------------------------------------------------------------
-KRAKEN_PAIR = "XXBTZUSD"      # Kraken's name for BTC/USD
-YF_TICKER = "BTC-USD"         # fallback source
+KRAKEN_PAIR = "XXBTZUSD"        # Kraken's name for BTC/USD
+COINBASE_PRODUCT = "BTC-USD"    # first fallback: another real exchange
+YF_TICKER = "BTC-USD"           # last resort: a scraper, not an exchange API
 
 # --- Strategy ----------------------------------------------------------
 # Shared by backtest.py and live_bot.py. Single source of truth.
@@ -65,7 +66,12 @@ USE_COMPLETED_CANDLES_ONLY = True
 
 # --- Data quality guards -----------------------------------------------
 MIN_CANDLES = SMA_TREND + 20  # enough history to compute every MA
-MAX_CANDLE_AGE_HOURS = 36     # newest bar older than this = stale data
+# A candle is timestamped by its OPEN. A daily candle that opened at 00:00
+# yesterday CLOSED at 00:00 today, so freshness must be measured from
+# open + duration, not from the open. Measuring from the open made every
+# healthy fetch look a day and a half stale.
+CANDLE_DURATION_HOURS = 24
+MAX_CANDLE_AGE_HOURS = 36     # newest candle CLOSED longer ago than this = stale
 
 # --- Paper account -----------------------------------------------------
 PAPER_STARTING_CASH = 10_000.0

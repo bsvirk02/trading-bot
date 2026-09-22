@@ -18,8 +18,7 @@ being an accident of one window.
 """
 
 import argparse
-import itertools
-
+import numpy as np
 import pandas as pd
 
 import settings
@@ -80,6 +79,17 @@ def run(close, params=None, verbose=False):
     equity = pd.Series(equity_curve, index=frame.index)
     prices = frame["close"]
 
+    # Risk-adjusted measures. Total return alone is a poor way to judge a
+    # strategy on an asset that rose 22,000% -- almost any rule that is
+    # invested most of the time looks spectacular. CAGR per unit of drawdown
+    # (Calmar) and per unit of volatility (Sharpe) are what separate an edge
+    # from simply being long.
+    daily = equity.pct_change().dropna()
+    years = max((equity.index[-1] - equity.index[0]).days / 365.25, 1e-9)
+    cagr = (equity.iloc[-1] / equity.iloc[0]) ** (1 / years) - 1
+    sharpe = float(daily.mean() / daily.std() * np.sqrt(365)) if daily.std() > 0 else 0.0
+    max_dd = (equity / equity.cummax() - 1).min() * 100
+
     sells = [t for t in broker.state["trades"] if t["action"] == "SELL"]
     wins = [t for t in sells if t.get("realised_pnl", 0) > 0]
     realised = sum(t.get("realised_pnl", 0) for t in sells)
@@ -92,7 +102,11 @@ def run(close, params=None, verbose=False):
         "days": len(frame),
         "strategy_return": (equity.iloc[-1] / equity.iloc[0] - 1) * 100,
         "buy_hold_return": (prices.iloc[-1] / prices.iloc[0] - 1) * 100,
-        "max_drawdown": (equity / equity.cummax() - 1).min() * 100,
+        "max_drawdown": max_dd,
+        "cagr": cagr * 100,
+        "sharpe": sharpe,
+        "calmar": (cagr / abs(max_dd / 100)) if max_dd else 0.0,
+        "years": years,
         "buy_hold_max_drawdown": (prices / prices.cummax() - 1).min() * 100,
         "round_trips": len(sells),
         "win_rate": (len(wins) / len(sells) * 100) if sells else 0.0,
@@ -115,6 +129,11 @@ def report(r):
     print("Buy & hold return:     {:>10.1f}%".format(r["buy_hold_return"]))
     print("Difference:            {:>10.1f}pp".format(
         r["strategy_return"] - r["buy_hold_return"]))
+    print("-" * 60)
+    print("CAGR:                  {:>10.1f}%   over {:.1f} years".format(
+        r["cagr"], r["years"]))
+    print("Sharpe:                {:>10.2f}".format(r["sharpe"]))
+    print("Calmar (CAGR/maxDD):   {:>10.2f}".format(r["calmar"]))
     print("-" * 60)
     print("Strategy max drawdown: {:>10.1f}%".format(r["max_drawdown"]))
     print("Buy&hold max drawdown: {:>10.1f}%".format(r["buy_hold_max_drawdown"]))
@@ -177,13 +196,23 @@ SWEEP_SHORT = [3, 5, 8, 10, 20]
 SWEEP_LONG = [100, 120, 150, 180, 200]
 
 
-def run_sweep(close):
+SCORES = {
+    "return": ("strategy_return", "total return %"),
+    "calmar": ("calmar", "CAGR / max drawdown"),
+    "sharpe": ("sharpe", "Sharpe ratio"),
+    "cagr": ("cagr", "CAGR %"),
+}
+
+
+def run_sweep(close, score="return"):
     """Vary the MA pair around the chosen 5/150.
 
     If 5/150 wins but its neighbours lose, the parameters were fitted to this
     particular history and should not be trusted forward.
     """
-    print("\nPARAMETER SWEEP - total return %, whole window")
+    key, description = SCORES[score]
+    fmt = "{:>9.0f}{}" if score in ("return", "cagr") else "{:>9.2f}{}"
+    print("\nPARAMETER SWEEP - {}".format(description))
     print("(rows = short MA, cols = long MA; chosen pair marked *)\n")
     header = "short\\long" + "".join("{:>10}".format(l) for l in SWEEP_LONG)
     print(header)
@@ -204,20 +233,20 @@ def run_sweep(close):
                 continue
             results[(short, long_)] = r
             mark = "*" if (short == settings.SMA_SHORT and long_ == settings.SMA_LONG) else " "
-            row += "{:>9.0f}{}".format(r["strategy_return"], mark)
+            row += fmt.format(r[key], mark)
         print(row)
 
     if results:
-        values = [r["strategy_return"] for r in results.values()]
+        values = [r[key] for r in results.values()]
         chosen = results.get((settings.SMA_SHORT, settings.SMA_LONG))
         print("-" * len(header))
-        print("best {:.0f}%   worst {:.0f}%   median {:.0f}%".format(
+        print("best {:.2f}   worst {:.2f}   median {:.2f}".format(
             max(values), min(values), pd.Series(values).median()))
         if chosen:
-            better = sum(1 for v in values if v > chosen["strategy_return"])
-            print("chosen {}/{} returns {:.0f}%, beaten by {} of {} combinations".format(
+            better = sum(1 for v in values if v > chosen[key])
+            print("chosen {}/{} scores {:.2f}, beaten by {} of {} combinations".format(
                 settings.SMA_SHORT, settings.SMA_LONG,
-                chosen["strategy_return"], better, len(values)))
+                chosen[key], better, len(values)))
         print("\nA robust edge shows a broad plateau of similar results.")
         print("A lone peak surrounded by poor neighbours is curve fitting.")
     return results
@@ -228,6 +257,8 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", action="store_true", help="print every trade")
     parser.add_argument("--periods", action="store_true", help="compare market regimes")
     parser.add_argument("--sweep", action="store_true", help="parameter sensitivity")
+    parser.add_argument("--score", default="return", choices=sorted(SCORES),
+                        help="metric the sweep ranks by (default: return)")
     parser.add_argument("--trailing", action="store_true", help="use a trailing stop")
     parser.add_argument("--start", help="YYYY-MM-DD")
     parser.add_argument("--end", help="YYYY-MM-DD")
@@ -245,7 +276,7 @@ if __name__ == "__main__":
     params = strategy.Params(stop_mode="trailing" if args.trailing else None)
 
     if args.sweep:
-        run_sweep(slice_period(closes, args.start, args.end))
+        run_sweep(slice_period(closes, args.start, args.end), args.score)
     elif args.periods:
         run_periods(closes, params)
     else:

@@ -51,7 +51,15 @@ YF_TICKER = "BTC-USD"           # last resort: a scraper, not an exchange API
 SMA_SHORT = 5
 SMA_LONG = 150
 SMA_TREND = 200
-STOP_LOSS_PCT = 0.15          # exit if price falls 15% below entry
+STOP_LOSS_PCT = 0.15          # exit if price falls 15% below the reference
+
+# "entry"    - stop measured from the entry price. Caps the loss on a single
+#              trade but NOT the drawdown: the 2025-26 backtest reached -19.4%
+#              with zero stop-loss exits, because a position up 30% can give
+#              back 20% from its high while still sitting above the stop.
+# "trailing" - measured from the high water mark, protecting accumulated gains.
+#              A different strategy; validate it before switching.
+STOP_MODE = "entry"
 
 # --- Execution costs (used by the paper broker and the backtest) --------
 TAKER_FEE_PCT = 0.0026        # Kraken taker fee, 0.26%

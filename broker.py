@@ -44,6 +44,10 @@ class Broker(object):
     def equity(self, price):
         raise NotImplementedError
 
+    def mark(self, price):
+        """Record a new price without trading. Default: nothing to do."""
+        return None
+
     def buy(self, price, as_of, reason):
         raise NotImplementedError
 
@@ -70,6 +74,7 @@ class PaperBroker(Broker):
                 "cash": float(settings.PAPER_STARTING_CASH),
                 "qty": 0.0,
                 "entry_price": 0.0,
+                "high_water": 0.0,
                 "starting_cash": float(settings.PAPER_STARTING_CASH),
                 "opened_at": datetime.now(timezone.utc).isoformat(),
                 "trades": [],
@@ -92,7 +97,20 @@ class PaperBroker(Broker):
         return Position(
             qty=float(self.state["qty"]),
             entry_price=float(self.state["entry_price"]),
+            high_water=float(self.state.get("high_water") or 0.0),
         )
+
+    def mark(self, price):
+        """Update the high water mark for a trailing stop.
+
+        Must be called before deciding, on every run. A trailing stop that
+        only updates when a trade happens is not a trailing stop.
+        """
+        if self.state["qty"] <= 0:
+            return
+        if price > float(self.state.get("high_water") or 0.0):
+            self.state["high_water"] = float(price)
+            self._save()
 
     def equity(self, price):
         return float(self.state["cash"]) + float(self.state["qty"]) * price
@@ -116,6 +134,7 @@ class PaperBroker(Broker):
         self.state["cash"] = 0.0
         self.state["qty"] = qty
         self.state["entry_price"] = fill
+        self.state["high_water"] = fill
         self._record("BUY", as_of, price, fill, qty, fee, reason)
         self._save()
         return {"fill": fill, "qty": qty, "fee": fee}
@@ -134,6 +153,7 @@ class PaperBroker(Broker):
         self.state["cash"] = proceeds - fee
         self.state["qty"] = 0.0
         self.state["entry_price"] = 0.0
+        self.state["high_water"] = 0.0
         self._record("SELL", as_of, price, fill, qty, fee, reason, pnl=pnl)
         self._save()
         return {"fill": fill, "qty": qty, "fee": fee, "pnl": pnl}

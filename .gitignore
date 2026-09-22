@@ -8,3 +8,4 @@ venv/
 ledger.json
 ledger.json.tmp
 logs/
+cache/

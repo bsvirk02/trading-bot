@@ -79,6 +79,9 @@ def main():
         )
         return 2
 
+    # Update the high water mark before deciding, so a trailing stop sees
+    # today's price. Harmless when STOP_MODE is "entry".
+    broker.mark(float(closes.iloc[-1]))
     position = broker.position()
     decision = strategy.decide_latest(closes, position)
 
